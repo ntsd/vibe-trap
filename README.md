@@ -1,0 +1,178 @@
+# 🪤 vibe-trap
+
+> **macOS AFK Anti-Tamper & Jumpscare Utility**  
+> *Keeping your MacBook screen awake, watching for unauthorized hands, and springing the ultimate trap.*
+
+Built for the **[DEV Hacktoberfest 2026 Week 4 Challenge: Ghost in the Machine](https://dev.to/challenges/hacktoberfest-week4-2026-10-26)**.
+
+---
+
+## ⚡ Overview
+
+Ever stepped away from your desk at a cafe, office, or hackathon and worried about someone snooping on your laptop?
+
+`vibe-trap` is a lightweight macOS AFK trap utility that:
+1. Keeps your MacBook screen awake using macOS `caffeinate`.
+2. Listens for global system-wide input events (mouse and keyboard).
+3. If an unauthorized person touches the mouse (any click) or types an incorrect key, it immediately launches a borderless, topmost, fullscreen jumpscare/meme window and blasts an eerie audio payload using native `afplay`.
+4. Exactly **3000 ms (3 seconds)** later, it shuts the window and immediately locks your Mac display using `pmset displaysleepnow`.
+5. If the laptop's rightful owner types the secret password (default: `ntsd`), the trap **silently disarms** and exits safely.
+
+---
+
+## 🚀 Instant Run via `npx`
+
+Zero setup, no Python environment, and no manual dependency installation required. Just run:
+
+```bash
+caffeinate -d npx vibe-trap
+```
+
+*(Or simply `npx vibe-trap`)*
+
+---
+
+## 🔐 macOS Permissions Setup
+
+Because `vibe-trap` monitors global input events across macOS (even when running in the background while other applications are in focus), macOS requires two privacy permissions:
+
+### 1. Accessibility
+1. Open **System Settings** (` > System Settings...`).
+2. Navigate to **Privacy & Security > Accessibility**.
+3. Toggle **ON** your terminal application (e.g. **Terminal**, **iTerm2**, **Ghostty**, or **VS Code**).
+
+### 2. Input Monitoring
+1. In **Privacy & Security**, scroll down to **Input Monitoring**.
+2. Toggle **ON** your terminal application.
+
+> [!NOTE]
+> If run without permissions, `vibe-trap` prints a reminder notice. If macOS prompts you with an access dialog, click **"Open System Settings"** and enable the toggle.
+
+---
+
+## 🏃 Usage & How It Works
+
+### Arming the Trap
+Execute with `caffeinate -d` to keep your MacBook display awake while armed:
+
+```bash
+caffeinate -d npx vibe-trap
+```
+
+### Disarming the Trap
+When you return to your computer, simply type the secret password on your keyboard:
+```text
+ntsd
+```
+The trap silently checks each keystroke prefix. Once the complete password is typed:
+```text
+[✓] PASSWORD VERIFIED ('ntsd')! Vibe Trap disarmed.
+[✓] Welcome back. Exiting safely.
+```
+The trap disarms and cleanly terminates without triggering any alarms or locking your screen.
+
+---
+
+## 💥 The Payload ("The Vibe Check")
+
+If an intruder touches your laptop:
+- **Mouse Click:** ANY mouse click (left, right, scroll-wheel click) triggers the trap immediately.
+- **Wrong Keystroke:** Any key that deviates from the password sequence (e.g. typing `a`, `admin`, or pressing `Space`, `Enter`, `Shift`, `Backspace`) triggers the trap immediately.
+
+When triggered, `vibe-trap` concurrently executes:
+1. **Audio Blast:** Asynchronously plays `vibe.wav` using native macOS `afplay`.
+2. **Fullscreen Jumpscare:** Instantly renders a borderless, topmost, fullscreen window on top of all applications, displaying the meme jumpscare image centered on a pitch-black background.
+3. **Fallback Mode:** If no image file is found, it renders high-visibility emergency red warning text (`🚨 UNAUTHORIZED ACCESS DETECTED 🚨`).
+4. **Display Sleep & Screen Lock:** After exactly 3000 milliseconds, the window closes and triggers:
+   ```bash
+   pmset displaysleepnow
+   ```
+   instantly putting the display to sleep and locking your MacBook.
+
+---
+
+## 🎨 Asset Pairing & Customization
+
+`vibe-trap` dynamically pairs and randomizes payload assets found in the `assets/` folder:
+
+```text
+assets/
+├── vibe.png  & vibe.wav    # Cyberpunk skull intruder jumpscare
+├── ghost.png & ghost.wav   # Spectral ghost in the machine
+└── alarm.png & alarm.wav   # Security klaxon alert
+```
+
+Whenever triggered, it picks a random matching image and audio pair from `assets/`. You can drop any custom meme or horror pair (`.png`, `.jpg`, `.wav`, `.mp3`) into `assets/`!
+
+### Command-Line Options
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--password`, `-p` | Set a custom disarm password | `ntsd` (or `$VIBE_TRAP_PASSWORD`) |
+| `--timeout`, `-t` | Window display duration in milliseconds | `3000` (3 seconds) |
+| `--image`, `-i` | Override with a specific image file | Auto / Assets |
+| `--audio`, `-a` | Override with a specific audio file | Auto / Assets |
+| `--assets-dir` | Custom directory containing assets | `assets` |
+| `--trigger-on-move` | Also trigger on mouse movement (in addition to clicks) | Disabled |
+| `--dry-run` | Test mode: triggers payload but skips screen sleep lock | Disabled |
+
+#### Examples:
+
+**Safe Test Mode (Dry Run - No Screen Sleep):**
+```bash
+npx vibe-trap --dry-run
+```
+
+**Custom Password:**
+```bash
+caffeinate -d npx vibe-trap --password "opensesame"
+```
+
+**Custom Jumpscare:**
+```bash
+caffeinate -d npx vibe-trap --image "assets/ghost.png" --audio "assets/ghost.wav"
+```
+
+---
+
+## 🛠️ Architecture & Under the Hood
+
+`vibe-trap` utilizes a high-performance **Hybrid npm + Native Swift Architecture**:
+- **Node.js Wrapper (`bin/cli.js`):** Provides instant, zero-install execution via `npx vibe-trap`, verifying macOS compatibility and relaying system signals.
+- **Native macOS Binary (`bin/vibe_trap`):** Ultra-lightweight (170 KB) native binary compiled from Swift ([`src/main.swift`](src/main.swift)). It leverages macOS `AppKit` (borderless fullscreen topmost window) and Quartz `CGEvent` taps + raw terminal `stdin` streams, starting in under 10ms with zero runtime dependencies.
+
+### Local Development & Building
+
+If you want to run or rebuild from source:
+
+```bash
+# Clone the repository
+git clone https://github.com/ntsd/vibe-trap.git
+cd vibe-trap
+
+# Recompile native Swift binary
+npm run build:bin
+
+# Test CLI execution
+npm test
+```
+
+---
+
+## 🧪 Testing
+
+To test the trap safely without locking your screen:
+
+```bash
+# Safe dry-run test
+npx . --dry-run
+```
+
+- **Test Disarming:** Type `ntsd` on your keyboard. The script silently disarms and exits.
+- **Test Trap:** Touch the mouse or type any incorrect letter (e.g. `a`). The jumpscare window and audio payload will fire for 3 seconds.
+
+---
+
+## 📄 License
+
+Distributed under the **Apache License 2.0**. See [`LICENSE`](LICENSE) for details.

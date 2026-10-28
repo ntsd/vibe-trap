@@ -1,0 +1,48 @@
+{
+  "name": "vibe-trap",
+  "version": "1.0.0",
+  "description": "macOS AFK trap utility. Keeps MacBook screen awake and triggers a jumpscare payload on unauthorized input.",
+  "main": "bin/cli.js",
+  "bin": {
+    "vibe-trap": "./bin/cli.js"
+  },
+  "os": [
+    "darwin"
+  ],
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "scripts": {
+    "start": "node ./bin/cli.js",
+    "test": "node ./bin/cli.js --help",
+    "build:bin": "swiftc src/main.swift -o bin/vibe_trap && chmod +x bin/vibe_trap"
+  },
+  "keywords": [
+    "macos",
+    "afk",
+    "trap",
+    "caffeinate",
+    "jumpscare",
+    "anti-theft",
+    "security",
+    "hacktoberfest",
+    "ghost-in-the-machine"
+  ],
+  "author": "Jirawat Boonkumnerd",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ntsd/vibe-trap.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ntsd/vibe-trap/issues"
+  },
+  "homepage": "https://github.com/ntsd/vibe-trap#readme",
+  "files": [
+    "bin",
+    "assets",
+    "README.md",
+    "LICENSE"
+  ]
+}
+
