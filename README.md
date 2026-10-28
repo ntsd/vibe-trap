@@ -79,15 +79,12 @@ If an intruder touches your laptop:
 - **Mouse Click:** ANY mouse click (left, right, scroll-wheel click) triggers the trap immediately.
 - **Wrong Keystroke:** Any key that deviates from the password sequence (e.g. typing `a`, `admin`, or pressing `Space`, `Enter`, `Shift`, `Backspace`) triggers the trap immediately.
 
-When triggered, `vibe-trap` concurrently executes:
-1. **Audio Blast:** Asynchronously plays `vibe.wav` using native macOS `afplay`.
-2. **Fullscreen Jumpscare:** Instantly renders a borderless, topmost, fullscreen window on top of all applications, displaying the meme jumpscare image centered on a pitch-black background.
-3. **Fallback Mode:** If no image file is found, it renders high-visibility emergency red warning text (`🚨 UNAUTHORIZED ACCESS DETECTED 🚨`).
-4. **Display Sleep & Screen Lock:** After exactly 3000 milliseconds, the window closes and triggers:
-   ```bash
-   pmset displaysleepnow
-   ```
-   instantly putting the display to sleep and locking your MacBook.
+When triggered, `vibe-trap` engages **Persistent Kiosk Lockout**:
+1. **Continuous Looping Audio:** Blasts the jumpscare audio continuously at full volume until disarmed.
+2. **Kiosk Screen Takeover:** Instantly renders a borderless, fullscreen window forced above the Dock, Menu Bar, and all applications (`.screenSaver` level) across all desktop spaces.
+3. **Control Lockout:** Hides the mouse cursor and swallows all mouse clicks/shortcuts, preventing intruders from switching apps or accessing macOS controls.
+4. **Invisible Disarm:** Type the secret password (`ntsd`) blindly anywhere on the keyboard. A continuous sliding-window validator detects the sequence, immediately kills the audio, closes the window, and restores normal desktop access.
+5. **Fallback / Auto-Lock:** If no image file is found, it renders high-visibility emergency warning text. An optional `--timeout <ms>` flag is also available if you prefer auto-sleeping the screen after a set duration.
 
 ---
 
@@ -103,14 +100,14 @@ assets/
 └── zombie.jpeg & zombie.mp3 # Hallway crawler ghoul + jumpscare roar
 ```
 
-Whenever triggered, it picks a random matching image and audio pair from `assets/`. You can drop any custom meme or horror pair (`.png`, `.jpg`, `.wav`, `.mp3`) into `assets/`!
+Whenever triggered, it picks a random matching image and audio pair from `assets/`. You can drop any custom meme or horror pair (`.png`, `.jpg`, `.webp`, `.wav`, `.mp3`) into `assets/`!
 
 ### Command-Line Options
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--password`, `-p` | Set a custom disarm password | `vibetrap` (or `$VIBE_TRAP_PASSWORD`) |
-| `--timeout`, `-t` | Window display duration in milliseconds | `3000` (3 seconds) |
+| `--password`, `-p` | Set a custom disarm password | `ntsd` (or `$VIBE_TRAP_PASSWORD`) |
+| `--timeout`, `-t` | Optional auto-lock timeout in milliseconds | Persistent until disarmed |
 | `--image`, `-i` | Override with a specific image file | Auto / Assets |
 | `--audio`, `-a` | Override with a specific audio file | Auto / Assets |
 | `--assets-dir` | Custom directory containing assets | `assets` |

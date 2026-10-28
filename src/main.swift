@@ -6,8 +6,8 @@ import Foundation
 // MARK: - Configuration & Arguments
 
 struct Config {
-    var password = ProcessInfo.processInfo.environment["VIBE_TRAP_PASSWORD"] ?? "vibetrap"
-    var timeoutMs = 3000
+    var password = ProcessInfo.processInfo.environment["VIBE_TRAP_PASSWORD"] ?? "ntsd"
+    var timeoutMs: Int? = nil // nil = persistent kiosk until password typed
     var customImage: String? = nil
     var customAudio: String? = nil
     var assetsDir = "assets"
@@ -36,7 +36,7 @@ func parseArguments() -> Config {
               --password, -p PASSWORD
                                     Secret disarm password (default: '\(config.password)')
               --timeout, -t TIMEOUT
-                                    Payload window duration in milliseconds (default: \(config.timeoutMs))
+                                    Optional auto-lock timeout in ms (default: persistent until disarmed)
               --image, -i IMAGE     Path to specific meme/jumpscare image (overrides auto-selection)
               --audio, -a AUDIO     Path to specific audio file (overrides auto-selection)
               --assets-dir ASSETS_DIR
@@ -150,14 +150,20 @@ class TrapManager {
     let audioPath: String?
 
     var typedBuffer = ""
+    var slidingJumpscareBuffer = ""
     var isTriggered = false
     var isDisarmed = false
+
     var eventTap: CFMachPort? = nil
     var originalTerm = termios()
     var isRawTerm = false
 
     var lastCharTime: CFAbsoluteTime = 0
     var lastChar: String = ""
+
+    var payloadWindow: NSWindow? = nil
+    var activeSound: NSSound? = nil
+    var activeAudioProcess: Process? = nil
 
     init(config: Config) {
         self.config = config
@@ -188,8 +194,8 @@ class TrapManager {
         print("Disarm Password : '\(config.password)' (type to disarm)")
         print("Payload Image   : \(imagePath ?? "None (Fallback red text)")")
         print("Payload Audio   : \(audioPath ?? "None")")
-        print("Window Timeout  : \(config.timeoutMs) ms (\(Double(config.timeoutMs) / 1000.0)s)")
-        print("Dry Run Mode    : \(config.dryRun ? "ENABLED (will not lock screen)" : "DISABLED (will lock screen)")")
+        print("Trap Mode       : \(config.timeoutMs == nil ? "🔒 Persistent Kiosk (locks until disarmed)" : "⏱️  Timeout (\(config.timeoutMs!) ms)")")
+        print("Dry Run Mode    : \(config.dryRun ? "ENABLED" : "DISABLED")")
         print("Permissions     : \(isTrusted ? "✅ Accessibility Granted" : "⚠️  Accessibility Prompted (Allow in Settings)")")
         print("Status          : 🛡️  ARMED! Listening for intruders...")
         print(String(repeating: "=", count: 64))
@@ -239,23 +245,21 @@ class TrapManager {
 
         DispatchQueue.global(qos: .userInteractive).async { [weak self] in
             var buf = [UInt8](repeating: 0, count: 16)
-            while let self = self, !self.isTriggered && !self.isDisarmed {
+            while let self = self, !self.isDisarmed {
                 let bytesRead = read(STDIN_FILENO, &buf, buf.count)
                 if bytesRead <= 0 { break }
 
                 // Check for Ctrl+C (ASCII 3)
                 if buf.prefix(bytesRead).contains(3) {
-                    self.restoreTerminal()
-                    print("\r\n[!] Disarmed by user (Ctrl+C). Exiting...")
-                    fflush(stdout)
-                    exit(0)
+                    self.cleanupAndExit(success: false, message: "[!] Disarmed by user (Ctrl+C). Exiting...")
+                    return
                 }
 
                 if let str = String(bytes: buf[0..<bytesRead], encoding: .utf8) {
                     DispatchQueue.main.async {
-                        self.handleKeyString(str)
+                        self.handleIncomingKeyString(str)
                     }
-                } else {
+                } else if !self.isTriggered {
                     DispatchQueue.main.async {
                         self.trigger(reason: "Non-UTF8 input sequence detected in terminal")
                     }
@@ -298,37 +302,56 @@ class TrapManager {
     }
 
     func handleEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
-        if isTriggered || isDisarmed {
+        if isDisarmed {
             return Unmanaged.passRetained(event)
         }
 
-        switch type {
-        case .leftMouseDown, .rightMouseDown, .otherMouseDown:
-            trigger(reason: "Mouse click detected (\(type))")
-            return nil
-
-        case .mouseMoved:
-            if config.triggerOnMove {
-                trigger(reason: "Mouse movement detected")
+        // --- WHILE ARMED (Before Jumpscare) ---
+        if !isTriggered {
+            switch type {
+            case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+                trigger(reason: "Mouse click detected (\(type))")
                 return nil
+
+            case .mouseMoved:
+                if config.triggerOnMove {
+                    trigger(reason: "Mouse movement detected")
+                    return nil
+                }
+                return Unmanaged.passRetained(event)
+
+            case .keyDown:
+                if let nsEvent = NSEvent(cgEvent: event), let chars = nsEvent.characters, !chars.isEmpty {
+                    handleIncomingKeyString(chars)
+                } else {
+                    trigger(reason: "Special key pressed")
+                }
+                return nil
+
+            default:
+                return Unmanaged.passRetained(event)
             }
-            return Unmanaged.passRetained(event)
+        }
+
+        // --- WHILE JUMPSCARE IS ACTIVE (Kiosk Lockout) ---
+        // Eat all mouse clicks so intruder cannot interact with other windows
+        switch type {
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown, .mouseMoved:
+            return nil // Swallowed completely
 
         case .keyDown:
             if let nsEvent = NSEvent(cgEvent: event), let chars = nsEvent.characters, !chars.isEmpty {
-                handleKeyString(chars)
-            } else {
-                trigger(reason: "Special key pressed")
+                handleIncomingKeyString(chars)
             }
-            return nil
+            return nil // Eat key event so background apps don't receive it
 
         default:
-            return Unmanaged.passRetained(event)
+            return nil
         }
     }
 
-    func handleKeyString(_ chars: String) {
-        if isTriggered || isDisarmed { return }
+    func handleIncomingKeyString(_ chars: String) {
+        if isDisarmed { return }
 
         let now = CFAbsoluteTimeGetCurrent()
 
@@ -342,40 +365,55 @@ class TrapManager {
             lastChar = charStr
             lastCharTime = now
 
-            typedBuffer.append(char)
-            let current = typedBuffer.lowercased()
-            let target = config.password.lowercased()
-
-            if current == target {
-                restoreTerminal()
-                print("\r\n[✓] PASSWORD VERIFIED ('\(config.password)')! Vibe Trap disarmed.")
-                print("[✓] Welcome back. Exiting safely.")
-                fflush(stdout)
-                isDisarmed = true
-                exit(0)
-            } else if target.hasPrefix(current) {
-                // Prefix matches, keep waiting silently
-                continue
+            if !isTriggered {
+                // Armed phase: strict prefix checking
+                processArmedKeystroke(char)
             } else {
-                trigger(reason: "Incorrect key sequence (typed '\(typedBuffer)', expected prefix of '\(config.password)')")
-                return
+                // Jumpscare phase: continuous sliding window matching
+                processJumpscareKeystroke(char)
             }
+        }
+    }
+
+    func processArmedKeystroke(_ char: Character) {
+        typedBuffer.append(char)
+        let current = typedBuffer.lowercased()
+        let target = config.password.lowercased()
+
+        if current == target {
+            isDisarmed = true
+            cleanupAndExit(success: true, message: "\r\n[✓] PASSWORD VERIFIED ('\(config.password)')! Vibe Trap disarmed.\r\n[✓] Welcome back. Exiting safely.")
+        } else if target.hasPrefix(current) {
+            // Valid prefix, wait silently
+            return
+        } else {
+            trigger(reason: "Incorrect key sequence (typed '\(typedBuffer)', expected prefix of '\(config.password)')")
+        }
+    }
+
+    func processJumpscareKeystroke(_ char: Character) {
+        slidingJumpscareBuffer.append(char)
+
+        let target = config.password.lowercased()
+        let maxLen = max(target.count, 16)
+        if slidingJumpscareBuffer.count > maxLen {
+            slidingJumpscareBuffer = String(slidingJumpscareBuffer.suffix(maxLen))
+        }
+
+        if slidingJumpscareBuffer.lowercased().hasSuffix(target) {
+            disarmFromJumpscare()
         }
     }
 
     func trigger(reason: String) {
         guard !isTriggered && !isDisarmed else { return }
         isTriggered = true
-        restoreTerminal()
-
-        if let tap = eventTap {
-            CGEvent.tapEnable(tap: tap, enable: false)
-        }
 
         print("\r\n" + String(repeating: "!", count: 56))
         print("💥💥💥 VIBE TRAP TRIGGERED! EXECUTING PAYLOAD 💥💥💥")
         print("!" + String(repeating: "!", count: 55))
         print("[!] Trigger Cause: \(reason)")
+        print("[*] Screen locked with jumpscare. Type password to disarm.")
         fflush(stdout)
 
         DispatchQueue.main.async {
@@ -384,19 +422,27 @@ class TrapManager {
     }
 
     func executePayload() {
-        // 1. Play audio asynchronously
-        var audioProc: Process? = nil
+        // 1. Play continuous audio (looping)
         if let audio = audioPath, FileManager.default.fileExists(atPath: audio) {
-            print("[*] Playing audio: \(audio)")
+            print("[*] Starting continuous looping audio: \(audio)")
             fflush(stdout)
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/afplay")
-            p.arguments = [audio]
-            try? p.run()
-            audioProc = p
+
+            // Try NSSound with looping first
+            if let sound = NSSound(contentsOfFile: audio, byReference: true) {
+                sound.loops = true
+                sound.play()
+                self.activeSound = sound
+            } else {
+                // Fallback to afplay process
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/bin/afplay")
+                p.arguments = [audio]
+                try? p.run()
+                self.activeAudioProcess = p
+            }
         }
 
-        // 2. Launch fullscreen borderless topmost window
+        // 2. Launch fullscreen borderless topmost kiosk window
         let screen = NSScreen.main ?? NSScreen.screens.first!
         let window = NSWindow(
             contentRect: screen.frame,
@@ -409,6 +455,7 @@ class TrapManager {
         window.isOpaque = true
         window.ignoresMouseEvents = false
         window.hidesOnDeactivate = false
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
 
         let contentView = NSView(frame: screen.frame)
         contentView.wantsLayer = true
@@ -436,48 +483,83 @@ class TrapManager {
         NSCursor.hide()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        self.payloadWindow = window
 
-        print("[*] Displaying payload window (duration: \(config.timeoutMs) ms)...")
+        print("[*] Displaying jumpscare window (Persistent Kiosk Mode)...")
+        print("[*] Type '\(config.password)' blindly anywhere on the keyboard to disarm.")
         fflush(stdout)
 
-        // 3. Timeout & Screen Lock after timeoutMs
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(config.timeoutMs)) {
-            NSCursor.unhide()
-            window.close()
+        // 3. Optional timeout (only if --timeout was explicitly specified)
+        if let timeout = config.timeoutMs, timeout > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(timeout)) { [weak self] in
+                guard let self = self, self.isTriggered && !self.isDisarmed else { return }
+                self.enforceScreenSleepLock()
+            }
+        }
+    }
 
-            if let p = audioProc, p.isRunning {
+    func disarmFromJumpscare() {
+        guard isTriggered && !isDisarmed else { return }
+        isDisarmed = true
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+
+            // 1. Stop audio
+            self.activeSound?.stop()
+            if let p = self.activeAudioProcess, p.isRunning {
                 p.terminate()
             }
 
-            if !self.config.dryRun {
-                print("[*] Locking macOS screen and enforcing password...")
-                fflush(stdout)
+            // 2. Unhide cursor & close window
+            NSCursor.unhide()
+            self.payloadWindow?.close()
 
-                // Enforce immediate password lock using Apple Login Framework
-                typealias LockFunc = @convention(c) () -> Int32
-                if let handle = dlopen("/System/Library/PrivateFrameworks/login.framework/login", RTLD_NOW) {
-                    if let sym = dlsym(handle, "SACLockScreenImmediate") {
-                        let lockScreen = unsafeBitCast(sym, to: LockFunc.self)
-                        _ = lockScreen()
-                    }
-                    dlclose(handle)
+            // 3. Cleanup terminal & exit
+            self.cleanupAndExit(
+                success: true,
+                message: "\r\n" + String(repeating: "=", count: 64)
+                    + "\r\n🔓 [✓] PASSWORD VERIFIED ('\(self.config.password)')!"
+                    + "\r\n🛡️  VIBE TRAP DISARMED. WORKSTATION RESTORED."
+                    + "\r\n" + String(repeating: "=", count: 64)
+            )
+        }
+    }
+
+    func enforceScreenSleepLock() {
+        activeSound?.stop()
+        if let p = activeAudioProcess, p.isRunning { p.terminate() }
+        NSCursor.unhide()
+        payloadWindow?.close()
+
+        if !config.dryRun {
+            print("[*] Locking macOS screen and enforcing password...")
+            fflush(stdout)
+
+            typealias LockFunc = @convention(c) () -> Int32
+            if let handle = dlopen("/System/Library/PrivateFrameworks/login.framework/login", RTLD_NOW) {
+                if let sym = dlsym(handle, "SACLockScreenImmediate") {
+                    let lockScreen = unsafeBitCast(sym, to: LockFunc.self)
+                    _ = lockScreen()
                 }
-
-                // Sleep the display
-                let lockProc = Process()
-                lockProc.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
-                lockProc.arguments = ["displaysleepnow"]
-                try? lockProc.run()
-                lockProc.waitUntilExit()
-            } else {
-                print("[DRY-RUN] Screen lock simulated ('pmset displaysleepnow' & 'SACLockScreenImmediate' skipped).")
-                fflush(stdout)
+                dlclose(handle)
             }
 
-            print("[*] Terminating vibe-trap.")
-            fflush(stdout)
-            exit(0)
+            let lockProc = Process()
+            lockProc.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+            lockProc.arguments = ["displaysleepnow"]
+            try? lockProc.run()
+            lockProc.waitUntilExit()
         }
+
+        cleanupAndExit(success: false, message: "[*] Terminating vibe-trap.")
+    }
+
+    func cleanupAndExit(success: Bool, message: String) {
+        restoreTerminal()
+        print(message)
+        fflush(stdout)
+        exit(success ? 0 : 1)
     }
 }
 
