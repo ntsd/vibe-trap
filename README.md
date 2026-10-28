@@ -95,7 +95,6 @@ When triggered, `vibe-trap` engages **Persistent Kiosk Lockout**:
 
 ```text
 assets/
-├── vibe.png   & vibe.wav    # Cyberpunk skull intruder + riser screech
 ├── scream.webp & scream.mp3 # Ghostface with knife + piercing scream
 ├── smile.webp  & smile.mp3  # Creepy smiling face + eerie echoing laughter
 └── zombie.jpeg & zombie.mp3 # Hallway crawler ghoul + jumpscare roar

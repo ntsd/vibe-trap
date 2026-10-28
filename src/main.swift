@@ -127,9 +127,6 @@ func selectAssets(config: Config) -> (imagePath: String?, audioPath: String?) {
         if selectedImg != nil && selectedAudio != nil { break }
     }
 
-    if selectedImg == nil { selectedImg = resolvePath("assets/vibe.png") }
-    if selectedAudio == nil { selectedAudio = resolvePath("assets/vibe.wav") }
-
     if selectedAudio == nil {
         for sysSound in ["/System/Library/Sounds/Sosumi.aiff", "/System/Library/Sounds/Basso.aiff"] {
             if fm.fileExists(atPath: sysSound) {
