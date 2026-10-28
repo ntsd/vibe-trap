@@ -6,7 +6,7 @@ import Foundation
 // MARK: - Configuration & Arguments
 
 struct Config {
-    var password = ProcessInfo.processInfo.environment["VIBE_TRAP_PASSWORD"] ?? "ntsd"
+    var password = ProcessInfo.processInfo.environment["VIBE_TRAP_PASSWORD"] ?? "vibetrap"
     var timeoutMs: Int? = nil // nil = persistent kiosk until password typed
     var customImage: String? = nil
     var customAudio: String? = nil

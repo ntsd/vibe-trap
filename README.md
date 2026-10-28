@@ -15,8 +15,8 @@ Ever stepped away from your desk at a cafe, office, or hackathon and worried abo
 1. Keeps your MacBook screen awake using macOS `caffeinate`.
 2. Listens for global system-wide input events (mouse and keyboard).
 3. If an unauthorized person touches the mouse (any click) or types an incorrect key, it immediately launches a borderless, topmost, fullscreen jumpscare/meme window and blasts an eerie audio payload using native `afplay`.
-4. Exactly **3000 ms (3 seconds)** later, it shuts the window and immediately locks your Mac display using `pmset displaysleepnow`.
-5. If the laptop's rightful owner types the secret password (default: `ntsd`), the trap **silently disarms** and exits safely.
+4. It engages persistent kiosk lockout: loops audio at full volume, swallows controls, and locks macOS immediately if bypass is attempted.
+5. If the laptop's rightful owner types the secret password (default: `vibetrap`), the trap **silently disarms** and exits safely.
 
 ---
 
@@ -62,11 +62,11 @@ caffeinate -d npx vibe-trap
 ### Disarming the Trap
 When you return to your computer, simply type the secret password on your keyboard:
 ```text
-ntsd
+vibetrap
 ```
 The trap silently checks each keystroke prefix. Once the complete password is typed:
 ```text
-[✓] PASSWORD VERIFIED ('ntsd')! Vibe Trap disarmed.
+[✓] PASSWORD VERIFIED ('vibetrap')! Vibe Trap disarmed.
 [✓] Welcome back. Exiting safely.
 ```
 The trap disarms and cleanly terminates without triggering any alarms or locking your screen.
@@ -83,7 +83,7 @@ When triggered, `vibe-trap` engages **Persistent Kiosk Lockout**:
 1. **Continuous Looping Audio:** Blasts the jumpscare audio continuously at full volume until disarmed.
 2. **Kiosk Screen Takeover:** Instantly renders a borderless, fullscreen window forced above the Dock, Menu Bar, and all applications (`.screenSaver` level) across all desktop spaces.
 3. **Control Lockout:** Hides the mouse cursor and swallows all mouse clicks/shortcuts, preventing intruders from switching apps or accessing macOS controls.
-4. **Invisible Disarm:** Type the secret password (`ntsd`) blindly anywhere on the keyboard. A continuous sliding-window validator detects the sequence, immediately kills the audio, closes the window, and restores normal desktop access.
+4. **Invisible Disarm:** Type the secret password (`vibetrap`) blindly anywhere on the keyboard. A continuous sliding-window validator detects the sequence, immediately kills the audio, closes the window, and restores normal desktop access.
 5. **Anti-Tamper Bypass Defense:** Any attempt to interrupt or kill the process (`Ctrl+C`, `Ctrl+\`, `Ctrl+D`, `SIGINT`, `SIGTERM`, `SIGHUP`) is caught instantly and triggers immediate workstation lock down (`SACLockScreenImmediate()` + `pmset displaysleepnow`).
 6. **Fallback / Auto-Lock:** If no image file is found, it renders high-visibility emergency warning text. An optional `--timeout <ms>` flag is also available if you prefer auto-sleeping the screen after a set duration.
 
@@ -106,7 +106,7 @@ Whenever triggered, it picks a random matching image and audio pair from `assets
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--password`, `-p` | Set a custom disarm password | `ntsd` (or `$VIBE_TRAP_PASSWORD`) |
+| `--password`, `-p` | Set a custom disarm password | `vibetrap` (or `$VIBE_TRAP_PASSWORD`) |
 | `--timeout`, `-t` | Optional auto-lock timeout in milliseconds | Persistent until disarmed |
 | `--image`, `-i` | Override with a specific image file | Auto / Assets |
 | `--audio`, `-a` | Override with a specific audio file | Auto / Assets |
@@ -166,7 +166,7 @@ To test the trap safely without locking your screen:
 npx . --dry-run
 ```
 
-- **Test Disarming:** Type `ntsd` on your keyboard. The script silently disarms and exits.
+- **Test Disarming:** Type `vibetrap` on your keyboard. The script silently disarms and exits.
 - **Test Trap:** Touch the mouse or type any incorrect letter (e.g. `a`). The jumpscare window and audio payload will fire for 3 seconds.
 
 ---
