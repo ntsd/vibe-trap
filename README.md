@@ -41,6 +41,10 @@ Because `vibe-trap` monitors global input events across macOS (even when running
 2. Navigate to **Privacy & Security > Accessibility**.
 3. Toggle **ON** your terminal application (e.g. **Terminal**, **iTerm2**, **Ghostty**, or **VS Code**).
 
+<p align="center">
+  <img src="assets/accessibility.png" alt="Allow Terminal in macOS Accessibility Settings" width="720">
+</p>
+
 ### 2. Input Monitoring
 1. In **Privacy & Security**, scroll down to **Input Monitoring**.
 2. Toggle **ON** your terminal application.
