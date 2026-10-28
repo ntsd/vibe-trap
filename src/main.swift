@@ -164,6 +164,7 @@ class TrapManager {
     var payloadWindow: NSWindow? = nil
     var activeSound: NSSound? = nil
     var activeAudioProcess: Process? = nil
+    var signalSources: [DispatchSourceSignal] = []
 
     init(config: Config) {
         self.config = config
@@ -195,7 +196,8 @@ class TrapManager {
         print("Payload Image   : \(imagePath ?? "None (Fallback red text)")")
         print("Payload Audio   : \(audioPath ?? "None")")
         print("Trap Mode       : \(config.timeoutMs == nil ? "🔒 Persistent Kiosk (locks until disarmed)" : "⏱️  Timeout (\(config.timeoutMs!) ms)")")
-        print("Dry Run Mode    : \(config.dryRun ? "ENABLED" : "DISABLED")")
+        print("Bypass Defense  : 🛡️  ACTIVE (Ctrl+C / kill signals trigger instant lock)")
+        print("Dry Run Mode    : \(config.dryRun ? "ENABLED (screen lock simulated)" : "DISABLED (screen will lock)")")
         print("Permissions     : \(isTrusted ? "✅ Accessibility Granted" : "⚠️  Accessibility Prompted (Allow in Settings)")")
         print("Status          : 🛡️  ARMED! Listening for intruders...")
         print(String(repeating: "=", count: 64))
@@ -224,13 +226,23 @@ class TrapManager {
     }
 
     func setupSignalHandlers() {
-        signal(SIGINT) { _ in
-            print("\n[!] Vibe Trap interrupted by user (SIGINT). Disarming...")
-            exit(0)
-        }
-        signal(SIGTERM) { _ in
-            print("\n[!] Vibe Trap terminated (SIGTERM).")
-            exit(0)
+        // Ignore standard signal handlers so kernel doesn't immediately kill the process
+        signal(SIGINT, SIG_IGN)
+        signal(SIGTERM, SIG_IGN)
+        signal(SIGHUP, SIG_IGN)
+        signal(SIGQUIT, SIG_IGN)
+
+        // Capture signals via Grand Central Dispatch on main queue
+        for sig in [SIGINT, SIGTERM, SIGHUP, SIGQUIT] {
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            source.setEventHandler { [weak self] in
+                guard let self = self, !self.isDisarmed else { return }
+                print("\r\n🚨 [SECURITY BREACH] Bypass signal (\(sig)) caught! Enforcing immediate lock screen...")
+                fflush(stdout)
+                self.enforceScreenSleepLock()
+            }
+            source.resume()
+            signalSources.append(source)
         }
     }
 
@@ -249,9 +261,13 @@ class TrapManager {
                 let bytesRead = read(STDIN_FILENO, &buf, buf.count)
                 if bytesRead <= 0 { break }
 
-                // Check for Ctrl+C (ASCII 3)
-                if buf.prefix(bytesRead).contains(3) {
-                    self.cleanupAndExit(success: false, message: "[!] Disarmed by user (Ctrl+C). Exiting...")
+                // Check for bypass attempts: Ctrl+C (3), Ctrl+\ (28), Ctrl+D (4)
+                if buf.prefix(bytesRead).contains(where: { $0 == 3 || $0 == 28 || $0 == 4 }) {
+                    DispatchQueue.main.async {
+                        print("\r\n🚨 [SECURITY BREACH] Terminal bypass combination detected! Enforcing immediate lock screen...")
+                        fflush(stdout)
+                        self.enforceScreenSleepLock()
+                    }
                     return
                 }
 
@@ -414,6 +430,7 @@ class TrapManager {
         print("!" + String(repeating: "!", count: 55))
         print("[!] Trigger Cause: \(reason)")
         print("[*] Screen locked with jumpscare. Type password to disarm.")
+        print("[!] Warning: Any attempt to exit or bypass will lock screen immediately.")
         fflush(stdout)
 
         DispatchQueue.main.async {
@@ -531,9 +548,10 @@ class TrapManager {
         if let p = activeAudioProcess, p.isRunning { p.terminate() }
         NSCursor.unhide()
         payloadWindow?.close()
+        restoreTerminal()
 
         if !config.dryRun {
-            print("[*] Locking macOS screen and enforcing password...")
+            print("\r\n🔒 [SECURITY PROTOCOL] Locking macOS screen and enforcing password...")
             fflush(stdout)
 
             typealias LockFunc = @convention(c) () -> Int32
@@ -550,6 +568,9 @@ class TrapManager {
             lockProc.arguments = ["displaysleepnow"]
             try? lockProc.run()
             lockProc.waitUntilExit()
+        } else {
+            print("\r\n[DRY-RUN] Screen lock simulated ('pmset displaysleepnow' & 'SACLockScreenImmediate' skipped).")
+            fflush(stdout)
         }
 
         cleanupAndExit(success: false, message: "[*] Terminating vibe-trap.")
