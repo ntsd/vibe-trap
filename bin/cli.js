@@ -6,7 +6,7 @@
  * Hybrid npm wrapper for macOS AFK trap utility.
  * Automatically locates the bundled macOS binary and executes it.
  *
- * License: Apache License 2.0
+ * License: MIT
  * Copyright (c) 2026 Jirawat Boonkumnerd
  */
 
