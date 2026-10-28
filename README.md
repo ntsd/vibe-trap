@@ -63,6 +63,17 @@ Execute with `caffeinate -d` to keep your MacBook display awake while armed:
 caffeinate -d npx vibe-trap
 ```
 
+> [!TIP]
+> **Keep Awake with Lid Closed (Clamshell Mode):**  
+> By default, closing your MacBook lid puts macOS to sleep immediately. To keep background processes running even with the lid shut:
+> ```bash
+> # Prevent sleep when closing lid:
+> sudo pmset -a disablesleep 1
+> 
+> # Restore default sleep behavior afterwards:
+> sudo pmset -a disablesleep 0
+> ```
+
 ### Disarming the Trap
 When you return to your computer, simply type the secret password on your keyboard:
 ```text
