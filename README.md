@@ -97,9 +97,10 @@ When triggered, `vibe-trap` concurrently executes:
 
 ```text
 assets/
-├── vibe.png  & vibe.wav    # Cyberpunk skull intruder jumpscare
-├── ghost.png & ghost.wav   # Spectral ghost in the machine
-└── alarm.png & alarm.wav   # Security klaxon alert
+├── vibe.png   & vibe.wav    # Cyberpunk skull intruder + riser screech
+├── scream.webp & scream.mp3 # Ghostface with knife + piercing scream
+├── smile.webp  & smile.mp3  # Creepy smiling face + eerie echoing laughter
+└── zombie.jpeg & zombie.mp3 # Hallway crawler ghoul + jumpscare roar
 ```
 
 Whenever triggered, it picks a random matching image and audio pair from `assets/`. You can drop any custom meme or horror pair (`.png`, `.jpg`, `.wav`, `.mp3`) into `assets/`!
@@ -108,7 +109,7 @@ Whenever triggered, it picks a random matching image and audio pair from `assets
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--password`, `-p` | Set a custom disarm password | `ntsd` (or `$VIBE_TRAP_PASSWORD`) |
+| `--password`, `-p` | Set a custom disarm password | `vibetrap` (or `$VIBE_TRAP_PASSWORD`) |
 | `--timeout`, `-t` | Window display duration in milliseconds | `3000` (3 seconds) |
 | `--image`, `-i` | Override with a specific image file | Auto / Assets |
 | `--audio`, `-a` | Override with a specific audio file | Auto / Assets |
