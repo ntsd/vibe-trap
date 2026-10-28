@@ -9,9 +9,9 @@ Built for the **[DEV Hacktoberfest 2026 Week 4 Challenge: Ghost in the Machine](
 
 ## ⚡ Overview
 
-Ever stepped away from your desk at a cafe, office, or hackathon and worried about someone snooping on your laptop?
+When you're **vibe coding** with autonomous agents, long builds, downloads, and model generations mean you always run `caffeinate` to keep your MacBook awake while stepping away. But an unattended, awake laptop invites snooping coworkers or friends to touch your trackpad or browse your terminal history.
 
-`vibe-trap` is a lightweight macOS AFK trap utility that:
+`vibe-trap` is a lightweight macOS AFK security trap that:
 1. Keeps your MacBook screen awake using macOS `caffeinate`.
 2. Listens for global system-wide input events (mouse and keyboard).
 3. If an unauthorized person touches the mouse (any click) or types an incorrect key, it immediately launches a borderless, topmost, fullscreen jumpscare/meme window and blasts an eerie audio payload using native `afplay`.
