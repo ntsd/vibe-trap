@@ -1,5 +1,6 @@
 import Cocoa
 import CoreGraphics
+import Darwin
 import Foundation
 
 // MARK: - Configuration & Arguments
@@ -126,8 +127,8 @@ func selectAssets(config: Config) -> (imagePath: String?, audioPath: String?) {
         if selectedImg != nil && selectedAudio != nil { break }
     }
 
-    if selectedImg == nil { selectedImg = resolvePath("vibe.png") }
-    if selectedAudio == nil { selectedAudio = resolvePath("vibe.wav") }
+    if selectedImg == nil { selectedImg = resolvePath("assets/vibe.png") }
+    if selectedAudio == nil { selectedAudio = resolvePath("assets/vibe.wav") }
 
     if selectedAudio == nil {
         for sysSound in ["/System/Library/Sounds/Sosumi.aiff", "/System/Library/Sounds/Basso.aiff"] {
@@ -155,6 +156,9 @@ class TrapManager {
     var originalTerm = termios()
     var isRawTerm = false
 
+    var lastCharTime: CFAbsoluteTime = 0
+    var lastChar: String = ""
+
     init(config: Config) {
         self.config = config
         let assets = selectAssets(config: config)
@@ -174,7 +178,6 @@ class TrapManager {
     }
 
     func checkPermissionsAndPrintBanner() {
-        // Request prompt if not trusted
         let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         let options = [promptKey: true] as CFDictionary
         let isTrusted = AXIsProcessTrustedWithOptions(options)
@@ -195,12 +198,12 @@ class TrapManager {
 
         if !isTrusted {
             print("""
-            ⚠️   macOS Accessibility Permission Required:
-            macOS requires permission to monitor global keyboard and mouse events.
+            ⚠️   macOS Accessibility Permission Notice:
+            Global background monitoring requires Accessibility permissions.
             If a system dialog popped up, click 'Open System Settings' and toggle
             ON your Terminal app.
             
-            👉 In the meantime, direct keystrokes in this terminal will still be trapped!
+            👉 Keystrokes inside this terminal are monitored directly via stdin!
             \(String(repeating: "=", count: 64))
             """)
         }
@@ -240,23 +243,21 @@ class TrapManager {
                 let bytesRead = read(STDIN_FILENO, &buf, buf.count)
                 if bytesRead <= 0 { break }
 
-                if bytesRead > 0 {
-                    // Check for Ctrl+C (ASCII 3)
-                    if buf.prefix(bytesRead).contains(3) {
-                        self.restoreTerminal()
-                        print("\r\n[!] Disarmed by user (Ctrl+C). Exiting...")
-                        fflush(stdout)
-                        exit(0)
-                    }
+                // Check for Ctrl+C (ASCII 3)
+                if buf.prefix(bytesRead).contains(3) {
+                    self.restoreTerminal()
+                    print("\r\n[!] Disarmed by user (Ctrl+C). Exiting...")
+                    fflush(stdout)
+                    exit(0)
+                }
 
-                    if let str = String(bytes: buf[0..<bytesRead], encoding: .utf8) {
-                        DispatchQueue.main.async {
-                            self.handleKeyString(str)
-                        }
-                    } else {
-                        DispatchQueue.main.async {
-                            self.trigger(reason: "Non-UTF8 input sequence detected in terminal")
-                        }
+                if let str = String(bytes: buf[0..<bytesRead], encoding: .utf8) {
+                    DispatchQueue.main.async {
+                        self.handleKeyString(str)
+                    }
+                } else {
+                    DispatchQueue.main.async {
+                        self.trigger(reason: "Non-UTF8 input sequence detected in terminal")
                     }
                 }
             }
@@ -329,16 +330,30 @@ class TrapManager {
     func handleKeyString(_ chars: String) {
         if isTriggered || isDisarmed { return }
 
+        let now = CFAbsoluteTimeGetCurrent()
+
         for char in chars {
+            let charStr = String(char)
+
+            // Deduplicate if identical character received from both CGEvent and stdin within 50ms
+            if charStr == lastChar && (now - lastCharTime) < 0.05 {
+                continue
+            }
+            lastChar = charStr
+            lastCharTime = now
+
             typedBuffer.append(char)
-            if typedBuffer == config.password {
+            let current = typedBuffer.lowercased()
+            let target = config.password.lowercased()
+
+            if current == target {
                 restoreTerminal()
                 print("\r\n[✓] PASSWORD VERIFIED ('\(config.password)')! Vibe Trap disarmed.")
                 print("[✓] Welcome back. Exiting safely.")
                 fflush(stdout)
                 isDisarmed = true
                 exit(0)
-            } else if config.password.hasPrefix(typedBuffer) {
+            } else if target.hasPrefix(current) {
                 // Prefix matches, keep waiting silently
                 continue
             } else {
@@ -435,15 +450,27 @@ class TrapManager {
             }
 
             if !self.config.dryRun {
-                print("[*] Locking macOS screen via 'pmset displaysleepnow'...")
+                print("[*] Locking macOS screen and enforcing password...")
                 fflush(stdout)
+
+                // Enforce immediate password lock using Apple Login Framework
+                typealias LockFunc = @convention(c) () -> Int32
+                if let handle = dlopen("/System/Library/PrivateFrameworks/login.framework/login", RTLD_NOW) {
+                    if let sym = dlsym(handle, "SACLockScreenImmediate") {
+                        let lockScreen = unsafeBitCast(sym, to: LockFunc.self)
+                        _ = lockScreen()
+                    }
+                    dlclose(handle)
+                }
+
+                // Sleep the display
                 let lockProc = Process()
                 lockProc.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
                 lockProc.arguments = ["displaysleepnow"]
                 try? lockProc.run()
                 lockProc.waitUntilExit()
             } else {
-                print("[DRY-RUN] Screen lock simulated ('pmset displaysleepnow' skipped).")
+                print("[DRY-RUN] Screen lock simulated ('pmset displaysleepnow' & 'SACLockScreenImmediate' skipped).")
                 fflush(stdout)
             }
 
