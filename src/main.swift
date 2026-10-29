@@ -1,4 +1,6 @@
 import Cocoa
+import CoreAudio
+import AudioToolbox
 import CoreGraphics
 import Darwin
 import Foundation
@@ -13,6 +15,12 @@ struct Config {
     var customAudio: String? = nil
     var assetsDir = "assets"
     var triggerOnMove = false
+    var maxVolume: Bool = {
+        if let env = ProcessInfo.processInfo.environment["VIBE_TRAP_MAX_VOLUME"]?.lowercased() {
+            return env != "0" && env != "false" && env != "no"
+        }
+        return true
+    }()
     var dryRun = false
 }
 
@@ -31,7 +39,8 @@ func parseArguments() -> Config {
             print("""
             usage: vibe-trap [-h] [-v] [--countdown SECONDS] [--password PASSWORD]
                              [--timeout TIMEOUT] [--image IMAGE] [--audio AUDIO]
-                             [--assets-dir ASSETS_DIR] [--trigger-on-move] [--dry-run]
+                             [--assets-dir ASSETS_DIR] [--trigger-on-move]
+                             [--max-volume | --no-max-volume] [--dry-run]
 
             vibe-trap: macOS AFK trap utility. Keeps screen awake and triggers on unauthorized input.
 
@@ -49,6 +58,8 @@ func parseArguments() -> Config {
               --assets-dir ASSETS_DIR
                                     Directory containing image/audio payload assets (default: 'assets')
               --trigger-on-move     Also trigger trap on mouse movement (by default triggers only on mouse click)
+              --max-volume          Force system output volume to 100% on trigger (default: enabled)
+              --no-max-volume       Do not change system volume when trap triggers
               --dry-run             Test mode: trigger payload and window, but skip display sleep lock
             """)
             exit(0)
@@ -66,6 +77,10 @@ func parseArguments() -> Config {
             if i + 1 < args.count { config.assetsDir = args[i + 1]; i += 1 }
         case "--trigger-on-move":
             config.triggerOnMove = true
+        case "--max-volume":
+            config.maxVolume = true
+        case "--no-max-volume":
+            config.maxVolume = false
         case "--dry-run":
             config.dryRun = true
         default:
@@ -148,12 +163,174 @@ func selectAssets(config: Config) -> (imagePath: String?, audioPath: String?) {
     return (selectedImg, selectedAudio)
 }
 
+// MARK: - Audio Volume Control
+
+func getSystemOutputVolume() -> Float32? {
+    var defaultOutputDeviceID = AudioDeviceID(0)
+    var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
+    var propertyAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    let status = AudioObjectGetPropertyData(
+        AudioObjectID(kAudioObjectSystemObject),
+        &propertyAddress,
+        0,
+        nil,
+        &propertySize,
+        &defaultOutputDeviceID
+    )
+    guard status == noErr else { return nil }
+
+    var volumeAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
+        mScope: kAudioDevicePropertyScopeOutput,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    var volume = Float32(0.0)
+    var volumeSize = UInt32(MemoryLayout<Float32>.size)
+    let volStatus = AudioObjectGetPropertyData(
+        defaultOutputDeviceID,
+        &volumeAddress,
+        0,
+        nil,
+        &volumeSize,
+        &volume
+    )
+    return volStatus == noErr ? volume : nil
+}
+
+func getSystemIsMuted() -> Bool? {
+    var defaultOutputDeviceID = AudioDeviceID(0)
+    var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
+    var propertyAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    let status = AudioObjectGetPropertyData(
+        AudioObjectID(kAudioObjectSystemObject),
+        &propertyAddress,
+        0,
+        nil,
+        &propertySize,
+        &defaultOutputDeviceID
+    )
+    guard status == noErr else { return nil }
+
+    var muteAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyMute,
+        mScope: kAudioDevicePropertyScopeOutput,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    var isMuted: UInt32 = 0
+    var muteSize = UInt32(MemoryLayout<UInt32>.size)
+    let muteStatus = AudioObjectGetPropertyData(
+        defaultOutputDeviceID,
+        &muteAddress,
+        0,
+        nil,
+        &muteSize,
+        &isMuted
+    )
+    return muteStatus == noErr ? (isMuted != 0) : nil
+}
+
+func setSystemOutputVolume(_ volume: Float32, unmuted: Bool = true) {
+    var defaultOutputDeviceID = AudioDeviceID(0)
+    var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
+    var propertyAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    let status = AudioObjectGetPropertyData(
+        AudioObjectID(kAudioObjectSystemObject),
+        &propertyAddress,
+        0,
+        nil,
+        &propertySize,
+        &defaultOutputDeviceID
+    )
+    guard status == noErr else { return }
+
+    if unmuted {
+        var muteAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyMute,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var mute: UInt32 = 0
+        _ = AudioObjectSetPropertyData(
+            defaultOutputDeviceID,
+            &muteAddress,
+            0,
+            nil,
+            UInt32(MemoryLayout<UInt32>.size),
+            &mute
+        )
+    }
+
+    var volumeAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
+        mScope: kAudioDevicePropertyScopeOutput,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    var vol = max(0.0, min(1.0, volume))
+    _ = AudioObjectSetPropertyData(
+        defaultOutputDeviceID,
+        &volumeAddress,
+        0,
+        nil,
+        UInt32(MemoryLayout<Float32>.size),
+        &vol
+    )
+}
+
+func setSystemMute(_ muted: Bool) {
+    var defaultOutputDeviceID = AudioDeviceID(0)
+    var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
+    var propertyAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    let status = AudioObjectGetPropertyData(
+        AudioObjectID(kAudioObjectSystemObject),
+        &propertyAddress,
+        0,
+        nil,
+        &propertySize,
+        &defaultOutputDeviceID
+    )
+    guard status == noErr else { return }
+
+    var muteAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyMute,
+        mScope: kAudioDevicePropertyScopeOutput,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    var muteVal: UInt32 = muted ? 1 : 0
+    _ = AudioObjectSetPropertyData(
+        defaultOutputDeviceID,
+        &muteAddress,
+        0,
+        nil,
+        UInt32(MemoryLayout<UInt32>.size),
+        &muteVal
+    )
+}
+
 // MARK: - State Management
 
 class TrapManager {
     let config: Config
     let imagePath: String?
     let audioPath: String?
+
+    var originalVolume: Float32? = nil
+    var originalMuted: Bool? = nil
 
     var typedBuffer = ""
     var slidingJumpscareBuffer = ""
@@ -178,6 +355,10 @@ class TrapManager {
         let assets = selectAssets(config: config)
         self.imagePath = assets.imagePath
         self.audioPath = assets.audioPath
+        if config.maxVolume {
+            self.originalVolume = getSystemOutputVolume()
+            self.originalMuted = getSystemIsMuted()
+        }
     }
 
     func start() {
@@ -240,6 +421,7 @@ class TrapManager {
         print(String(repeating: "=", count: 64))
         print("Disarm Password : '\(config.password)' (type to disarm)")
         print("Countdown       : \(config.countdown > 0 ? "\(config.countdown)s before arming sensors" : "Instant (0s)")")
+        print("Volume Override : \(config.maxVolume ? "🔊 100% (Max) on trigger (restores on disarm)" : "Disabled (preserve current volume)")")
         print("Payload Image   : \(imagePath ?? "None (Fallback red text)")")
         print("Payload Audio   : \(audioPath ?? "None")")
         print("Trap Mode       : \(config.timeoutMs == nil ? "🔒 Persistent Kiosk (locks until disarmed)" : "⏱️  Timeout (\(config.timeoutMs!) ms)")")
@@ -494,8 +676,36 @@ class TrapManager {
         }
     }
 
+    func restoreOriginalVolume() {
+        guard config.maxVolume, let origVol = originalVolume else { return }
+        print("[*] Restoring original system volume (\(Int(origVol * 100))%)...")
+        fflush(stdout)
+        setSystemOutputVolume(origVol, unmuted: !(originalMuted ?? false))
+        if originalMuted == true {
+            setSystemMute(true)
+        }
+        let mutedStr = (originalMuted == true) ? "with output muted" : "without output muted"
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        p.arguments = ["-e", "set volume output volume \(Int(origVol * 100)) \(mutedStr)"]
+        try? p.run()
+    }
+
     func executePayload() {
-        // 1. Play continuous audio (looping)
+        // 1. Force max system volume if enabled
+        if config.maxVolume {
+            print("[*] Forcing system output volume to 100% (unmuted)...")
+            fflush(stdout)
+            setSystemOutputVolume(1.0, unmuted: true)
+            DispatchQueue.global(qos: .userInteractive).async {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+                p.arguments = ["-e", "set volume output volume 100 without output muted"]
+                try? p.run()
+            }
+        }
+
+        // 2. Play continuous audio (looping)
         if let audio = audioPath, FileManager.default.fileExists(atPath: audio) {
             print("[*] Starting continuous looping audio: \(audio)")
             fflush(stdout)
@@ -515,7 +725,7 @@ class TrapManager {
             }
         }
 
-        // 2. Launch fullscreen borderless topmost kiosk window
+        // 3. Launch fullscreen borderless topmost kiosk window
         let screen = NSScreen.main ?? NSScreen.screens.first!
         let window = NSWindow(
             contentRect: screen.frame,
@@ -562,7 +772,7 @@ class TrapManager {
         print("[*] Type '\(config.password)' blindly anywhere on the keyboard to disarm.")
         fflush(stdout)
 
-        // 3. Optional timeout (only if --timeout was explicitly specified)
+        // 4. Optional timeout (only if --timeout was explicitly specified)
         if let timeout = config.timeoutMs, timeout > 0 {
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(timeout)) { [weak self] in
                 guard let self = self, self.isTriggered && !self.isDisarmed else { return }
@@ -578,11 +788,12 @@ class TrapManager {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
 
-            // 1. Stop audio
+            // 1. Stop audio & restore volume
             self.activeSound?.stop()
             if let p = self.activeAudioProcess, p.isRunning {
                 p.terminate()
             }
+            self.restoreOriginalVolume()
 
             // 2. Unhide cursor & close window
             NSCursor.unhide()
@@ -602,6 +813,7 @@ class TrapManager {
     func enforceScreenSleepLock() {
         activeSound?.stop()
         if let p = activeAudioProcess, p.isRunning { p.terminate() }
+        restoreOriginalVolume()
         NSCursor.unhide()
         payloadWindow?.close()
         restoreTerminal()

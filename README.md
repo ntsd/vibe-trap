@@ -97,10 +97,10 @@ If an intruder touches your laptop:
 - **Wrong Keystroke:** Any key that deviates from the password sequence (e.g. typing `a`, `admin`, or pressing `Space`, `Enter`, `Shift`, `Backspace`) triggers the trap immediately.
 
 When triggered, `vibe-trap` engages **Persistent Kiosk Lockout**:
-1. **Continuous Looping Audio:** Blasts the jumpscare audio continuously at full volume until disarmed.
+1. **Full-Volume Audio Blast:** Instantly unmutes system audio and ramps macOS output volume to 100% (scalar 1.0) via CoreAudio hardware services, continuously looping the jumpscare audio until disarmed. When disarmed, your original volume and mute state are cleanly restored.
 2. **Kiosk Screen Takeover:** Instantly renders a borderless, fullscreen window forced above the Dock, Menu Bar, and all applications (`.screenSaver` level) across all desktop spaces.
 3. **Control Lockout:** Hides the mouse cursor and swallows all mouse clicks/shortcuts, preventing intruders from switching apps or accessing macOS controls.
-4. **Invisible Disarm:** Type the secret password (`vibetrap`) blindly anywhere on the keyboard. A continuous sliding-window validator detects the sequence, immediately kills the audio, closes the window, and restores normal desktop access.
+4. **Invisible Disarm:** Type the secret password (`vibetrap`) blindly anywhere on the keyboard. A continuous sliding-window validator detects the sequence, immediately kills the audio, restores your original volume, closes the window, and restores normal desktop access.
 5. **Anti-Tamper Bypass Defense:** Any attempt to interrupt or kill the process (`Ctrl+C`, `Ctrl+\`, `Ctrl+D`, `SIGINT`, `SIGTERM`, `SIGHUP`) is caught instantly and triggers immediate workstation lock down (`SACLockScreenImmediate()` + `pmset displaysleepnow`).
 6. **Fallback / Auto-Lock:** If no image file is found, it renders high-visibility emergency warning text. An optional `--timeout <ms>` flag is also available if you prefer auto-sleeping the screen after a set duration.
 
@@ -130,6 +130,8 @@ Whenever triggered, it picks a random matching image and audio pair from `assets
 | `--audio`, `-a` | Override with a specific audio file | Auto / Assets |
 | `--assets-dir` | Custom directory containing assets | `assets` |
 | `--trigger-on-move` | Also trigger on mouse movement (in addition to clicks) | Disabled |
+| `--max-volume` | Force system output volume to 100% on trigger | Enabled (or `$VIBE_TRAP_MAX_VOLUME`) |
+| `--no-max-volume` | Preserve current volume when trap triggers | Disabled |
 | `--dry-run` | Test mode: triggers payload but skips screen sleep lock | Disabled |
 | `--version`, `-v` | Show version number and exit | `1.1.0` |
 | `--help`, `-h` | Show help message and exit | |
@@ -145,9 +147,10 @@ caffeinate -d npx vibe-trap --countdown 10
 caffeinate -d npx vibe-trap -c 0
 ```
 
-**Safe Test Mode (Dry Run - No Screen Sleep):**
+**Safe Test Mode (Dry Run - No Screen Sleep & No Max Volume):**
 ```bash
-npx vibe-trap --dry-run
+# Safe for headphones while testing
+npx vibe-trap --dry-run --no-max-volume
 ```
 
 **Custom Password:**
