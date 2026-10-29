@@ -7,6 +7,7 @@ import Foundation
 
 struct Config {
     var password = ProcessInfo.processInfo.environment["VIBE_TRAP_PASSWORD"] ?? "vibetrap"
+    var countdown = Int(ProcessInfo.processInfo.environment["VIBE_TRAP_COUNTDOWN"] ?? "3") ?? 3
     var timeoutMs: Int? = nil // nil = persistent kiosk until password typed
     var customImage: String? = nil
     var customAudio: String? = nil
@@ -23,16 +24,22 @@ func parseArguments() -> Config {
     while i < args.count {
         let arg = args[i]
         switch arg {
+        case "-v", "--version":
+            print("vibe-trap v1.1.0")
+            exit(0)
         case "-h", "--help":
             print("""
-            usage: vibe-trap [-h] [--password PASSWORD] [--timeout TIMEOUT]
-                             [--image IMAGE] [--audio AUDIO] [--assets-dir ASSETS_DIR]
-                             [--trigger-on-move] [--dry-run]
+            usage: vibe-trap [-h] [-v] [--countdown SECONDS] [--password PASSWORD]
+                             [--timeout TIMEOUT] [--image IMAGE] [--audio AUDIO]
+                             [--assets-dir ASSETS_DIR] [--trigger-on-move] [--dry-run]
 
             vibe-trap: macOS AFK trap utility. Keeps screen awake and triggers on unauthorized input.
 
             options:
               -h, --help            show this help message and exit
+              -v, --version         show program's version number and exit
+              --countdown, -c SECONDS
+                                    Countdown in seconds before arming sensors (default: 3)
               --password, -p PASSWORD
                                     Secret disarm password (default: '\(config.password)')
               --timeout, -t TIMEOUT
@@ -45,6 +52,8 @@ func parseArguments() -> Config {
               --dry-run             Test mode: trigger payload and window, but skip display sleep lock
             """)
             exit(0)
+        case "-c", "--countdown":
+            if i + 1 < args.count, let c = Int(args[i + 1]) { config.countdown = max(0, c); i += 1 }
         case "-p", "--password":
             if i + 1 < args.count { config.password = args[i + 1]; i += 1 }
         case "-t", "--timeout":
@@ -150,6 +159,7 @@ class TrapManager {
     var slidingJumpscareBuffer = ""
     var isTriggered = false
     var isDisarmed = false
+    var isSensorArmed = false
 
     var eventTap: CFMachPort? = nil
     var originalTerm = termios()
@@ -173,12 +183,51 @@ class TrapManager {
     func start() {
         checkPermissionsAndPrintBanner()
         setupSignalHandlers()
-        setupStdinListener()
-        setupEventTap()
+
+        if config.countdown > 0 {
+            startCountdown(secondsRemaining: config.countdown)
+        } else {
+            armSensors()
+        }
 
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         app.run()
+    }
+
+    func startCountdown(secondsRemaining: Int) {
+        if secondsRemaining > 0 {
+            if isatty(STDOUT_FILENO) != 0 {
+                print("\r⏳ Arming touch sensor in \(secondsRemaining)s... (step away from mouse & keyboard) ", terminator: "")
+            } else {
+                print("⏳ Arming touch sensor in \(secondsRemaining)s...")
+            }
+            fflush(stdout)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                guard let self = self, !self.isDisarmed else { return }
+                self.startCountdown(secondsRemaining: secondsRemaining - 1)
+            }
+        } else {
+            if isatty(STDOUT_FILENO) != 0 {
+                print("\r🛡️  [ARMED] Touch sensors ACTIVE! Workstation is now protected.              \r\n")
+            } else {
+                print("🛡️  [ARMED] Touch sensors ACTIVE! Workstation is now protected.\n")
+            }
+            print(String(repeating: "=", count: 64))
+            fflush(stdout)
+            self.armSensors()
+        }
+    }
+
+    func armSensors() {
+        guard !isSensorArmed && !isDisarmed else { return }
+        isSensorArmed = true
+
+        // Flush any pending keys typed during the countdown
+        tcflush(STDIN_FILENO, TCIFLUSH)
+
+        setupStdinListener()
+        setupEventTap()
     }
 
     func checkPermissionsAndPrintBanner() {
@@ -190,13 +239,14 @@ class TrapManager {
         print("                 ⚡ VIBE TRAP ARMED & READY ⚡")
         print(String(repeating: "=", count: 64))
         print("Disarm Password : '\(config.password)' (type to disarm)")
+        print("Countdown       : \(config.countdown > 0 ? "\(config.countdown)s before arming sensors" : "Instant (0s)")")
         print("Payload Image   : \(imagePath ?? "None (Fallback red text)")")
         print("Payload Audio   : \(audioPath ?? "None")")
         print("Trap Mode       : \(config.timeoutMs == nil ? "🔒 Persistent Kiosk (locks until disarmed)" : "⏱️  Timeout (\(config.timeoutMs!) ms)")")
         print("Bypass Defense  : 🛡️  ACTIVE (Ctrl+C / kill signals trigger instant lock)")
         print("Dry Run Mode    : \(config.dryRun ? "ENABLED (screen lock simulated)" : "DISABLED (screen will lock)")")
         print("Permissions     : \(isTrusted ? "✅ Accessibility Granted" : "⚠️  Accessibility Prompted (Allow in Settings)")")
-        print("Status          : 🛡️  ARMED! Listening for intruders...")
+        print("Status          : \(config.countdown > 0 ? "⏳ Arming in \(config.countdown)s..." : "🛡️  ARMED! Listening for intruders...")")
         print(String(repeating: "=", count: 64))
         print("Tip: Keep MacBook awake by running: caffeinate -d npx vibe-trap")
         print(String(repeating: "=", count: 64))
@@ -234,6 +284,15 @@ class TrapManager {
             let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
             source.setEventHandler { [weak self] in
                 guard let self = self, !self.isDisarmed else { return }
+
+                // If interrupted during countdown, exit cleanly without locking screen
+                if !self.isSensorArmed {
+                    print("\r\n[*] Aborted during countdown. Exiting safely.")
+                    fflush(stdout)
+                    self.cleanupAndExit(success: true, message: "")
+                    return
+                }
+
                 print("\r\n🚨 [SECURITY BREACH] Bypass signal (\(sig)) caught! Enforcing immediate lock screen...")
                 fflush(stdout)
                 self.enforceScreenSleepLock()
@@ -315,7 +374,7 @@ class TrapManager {
     }
 
     func handleEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
-        if isDisarmed {
+        if !isSensorArmed || isDisarmed {
             return Unmanaged.passRetained(event)
         }
 
@@ -364,7 +423,7 @@ class TrapManager {
     }
 
     func handleIncomingKeyString(_ chars: String) {
-        if isDisarmed { return }
+        if !isSensorArmed || isDisarmed { return }
 
         let now = CFAbsoluteTimeGetCurrent()
 

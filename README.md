@@ -63,6 +63,8 @@ Execute with `caffeinate -d` to keep your MacBook display awake while armed:
 caffeinate -d npx vibe-trap
 ```
 
+By default, `vibe-trap` provides a **3-second countdown** (`⏳ Arming in 3s...`), giving you time to release your mouse and step away. Pressing `Ctrl+C` during the countdown aborts cleanly. Customize the countdown using `--countdown <sec>` (or `-c 0` to arm instantly).
+
 > [!TIP]
 > **Keep Awake with Lid Closed (Clamshell Mode):**  
 > By default, closing your MacBook lid puts macOS to sleep immediately. To keep background processes running even with the lid shut:
@@ -121,6 +123,7 @@ Whenever triggered, it picks a random matching image and audio pair from `assets
 
 | Flag | Description | Default |
 |------|-------------|---------|
+| `--countdown`, `-c` | Grace period in seconds before arming sensors | `3` (or `$VIBE_TRAP_COUNTDOWN`) |
 | `--password`, `-p` | Set a custom disarm password | `vibetrap` (or `$VIBE_TRAP_PASSWORD`) |
 | `--timeout`, `-t` | Optional auto-lock timeout in milliseconds | Persistent until disarmed |
 | `--image`, `-i` | Override with a specific image file | Auto / Assets |
@@ -128,8 +131,19 @@ Whenever triggered, it picks a random matching image and audio pair from `assets
 | `--assets-dir` | Custom directory containing assets | `assets` |
 | `--trigger-on-move` | Also trigger on mouse movement (in addition to clicks) | Disabled |
 | `--dry-run` | Test mode: triggers payload but skips screen sleep lock | Disabled |
+| `--version`, `-v` | Show version number and exit | `1.1.0` |
+| `--help`, `-h` | Show help message and exit | |
 
 #### Examples:
+
+**Custom Countdown & Immediate Arming:**
+```bash
+# Give yourself 10 seconds to step away
+caffeinate -d npx vibe-trap --countdown 10
+
+# Arm immediately without countdown
+caffeinate -d npx vibe-trap -c 0
+```
 
 **Safe Test Mode (Dry Run - No Screen Sleep):**
 ```bash
