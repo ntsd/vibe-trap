@@ -7,7 +7,7 @@ import Foundation
 
 struct Config {
     var password = ProcessInfo.processInfo.environment["VIBE_TRAP_PASSWORD"] ?? "vibetrap"
-    var countdown = Int(ProcessInfo.processInfo.environment["VIBE_TRAP_COUNTDOWN"] ?? "3") ?? 3
+    var countdown = Int(ProcessInfo.processInfo.environment["VIBE_TRAP_COUNTDOWN"] ?? "5") ?? 5
     var timeoutMs: Int? = nil // nil = persistent kiosk until password typed
     var customImage: String? = nil
     var customAudio: String? = nil
@@ -39,7 +39,7 @@ func parseArguments() -> Config {
               -h, --help            show this help message and exit
               -v, --version         show program's version number and exit
               --countdown, -c SECONDS
-                                    Countdown in seconds before arming sensors (default: 3)
+                                    Countdown in seconds before arming sensors (default: 5)
               --password, -p PASSWORD
                                     Secret disarm password (default: '\(config.password)')
               --timeout, -t TIMEOUT

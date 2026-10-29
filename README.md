@@ -63,7 +63,7 @@ Execute with `caffeinate -d` to keep your MacBook display awake while armed:
 caffeinate -d npx vibe-trap
 ```
 
-By default, `vibe-trap` provides a **3-second countdown** (`⏳ Arming in 3s...`), giving you time to release your mouse and step away. Pressing `Ctrl+C` during the countdown aborts cleanly. Customize the countdown using `--countdown <sec>` (or `-c 0` to arm instantly).
+By default, `vibe-trap` provides a **5-second countdown** (`⏳ Arming in 5s...`), giving you time to release your mouse and step away. Pressing `Ctrl+C` during the countdown aborts cleanly. Customize the countdown using `--countdown <sec>` (or `-c 0` to arm instantly).
 
 > [!TIP]
 > **Keep Awake with Lid Closed (Clamshell Mode):**  
@@ -123,7 +123,7 @@ Whenever triggered, it picks a random matching image and audio pair from `assets
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--countdown`, `-c` | Grace period in seconds before arming sensors | `3` (or `$VIBE_TRAP_COUNTDOWN`) |
+| `--countdown`, `-c` | Grace period in seconds before arming sensors | `5` (or `$VIBE_TRAP_COUNTDOWN`) |
 | `--password`, `-p` | Set a custom disarm password | `vibetrap` (or `$VIBE_TRAP_PASSWORD`) |
 | `--timeout`, `-t` | Optional auto-lock timeout in milliseconds | Persistent until disarmed |
 | `--image`, `-i` | Override with a specific image file | Auto / Assets |
