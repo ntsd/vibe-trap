@@ -4,8 +4,25 @@ import AudioToolbox
 import CoreGraphics
 import Darwin
 import Foundation
+import IOKit
+import IOKit.hid
+import IOKit.ps
 
-// MARK: - Configuration & Arguments
+// MARK: - Sensitivity & Configuration
+
+enum Sensitivity: String {
+    case low
+    case medium
+    case high
+
+    var thresholdG: Double {
+        switch self {
+        case .low: return 0.45
+        case .medium: return 0.25
+        case .high: return 0.12
+        }
+    }
+}
 
 struct Config {
     var password = ProcessInfo.processInfo.environment["VIBE_TRAP_PASSWORD"] ?? "vibetrap"
@@ -22,6 +39,8 @@ struct Config {
         return true
     }()
     var dryRun = false
+    var antiTheft = false
+    var sensitivity: Sensitivity = .medium
 }
 
 func parseArguments() -> Config {
@@ -33,7 +52,7 @@ func parseArguments() -> Config {
         let arg = args[i]
         switch arg {
         case "-v", "--version":
-            print("vibe-trap v1.1.0")
+            print("vibe-trap v1.3.0")
             exit(0)
         case "-h", "--help":
             print("""
@@ -41,6 +60,7 @@ func parseArguments() -> Config {
                              [--timeout TIMEOUT] [--image IMAGE] [--audio AUDIO]
                              [--assets-dir ASSETS_DIR] [--trigger-on-move]
                              [--max-volume | --no-max-volume] [--dry-run]
+                             [-T | --anti-theft] [-s | --sensitivity <low|medium|high>]
 
             vibe-trap: macOS AFK trap utility. Keeps screen awake and triggers on unauthorized input.
 
@@ -61,6 +81,10 @@ func parseArguments() -> Config {
               --max-volume          Force system output volume to 100% on trigger (default: enabled)
               --no-max-volume       Do not change system volume when trap triggers
               --dry-run             Test mode: trigger payload and window, but skip display sleep lock
+              -T, --anti-theft      Coffee shop anti-theft mode: triggers on physical movement (accelerometer),
+                                    AC power disconnect (MagSafe/USB-C), and lid closure
+              -s, --sensitivity LEVEL
+                                    Motion sensitivity for anti-theft: low, medium, or high (default: medium)
             """)
             exit(0)
         case "-c", "--countdown":
@@ -83,6 +107,15 @@ func parseArguments() -> Config {
             config.maxVolume = false
         case "--dry-run":
             config.dryRun = true
+        case "-T", "--anti-theft":
+            config.antiTheft = true
+        case "-s", "--sensitivity":
+            if i + 1 < args.count {
+                if let sens = Sensitivity(rawValue: args[i + 1].lowercased()) {
+                    config.sensitivity = sens
+                }
+                i += 1
+            }
         default:
             break
         }
@@ -350,6 +383,19 @@ class TrapManager {
     var activeAudioProcess: Process? = nil
     var signalSources: [DispatchSourceSignal] = []
 
+    // Anti-Theft state
+    var wasACConnected: Bool? = nil
+    var powerRunLoopSource: CFRunLoopSource? = nil
+    var clamshellTimer: DispatchSourceTimer? = nil
+    var sleepObserver: Any? = nil
+
+    // Hardware IMU Accelerometer state
+    var hidDevice: IOHIDDevice? = nil
+    var reportBuffer: UnsafeMutablePointer<UInt8>? = nil
+    var baselineGravity: (x: Double, y: Double, z: Double)? = nil
+    var calibrationSamples: [(x: Double, y: Double, z: Double)] = []
+    var isCalibrating = false
+
     init(config: Config) {
         self.config = config
         let assets = selectAssets(config: config)
@@ -365,6 +411,11 @@ class TrapManager {
         checkPermissionsAndPrintBanner()
         setupSignalHandlers()
 
+        if config.antiTheft {
+            self.wasACConnected = checkIsACConnected()
+            setupAccelerometerMonitoring()
+        }
+
         if config.countdown > 0 {
             startCountdown(secondsRemaining: config.countdown)
         } else {
@@ -378,10 +429,11 @@ class TrapManager {
 
     func startCountdown(secondsRemaining: Int) {
         if secondsRemaining > 0 {
+            let label = config.antiTheft ? "anti-theft sensors" : "touch sensor"
             if isatty(STDOUT_FILENO) != 0 {
-                print("\r⏳ Arming touch sensor in \(secondsRemaining)s... (step away from mouse & keyboard) ", terminator: "")
+                print("\r⏳ Arming \(label) in \(secondsRemaining)s... (step away from workstation) ", terminator: "")
             } else {
-                print("⏳ Arming touch sensor in \(secondsRemaining)s...")
+                print("⏳ Arming \(label) in \(secondsRemaining)s...")
             }
             fflush(stdout)
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
@@ -389,10 +441,13 @@ class TrapManager {
                 self.startCountdown(secondsRemaining: secondsRemaining - 1)
             }
         } else {
+            let statusText = config.antiTheft
+                ? "🛡️  [ARMED] Anti-Theft Defense ACTIVE! (Motion, AC power, and lid monitored)"
+                : "🛡️  [ARMED] Touch sensors ACTIVE! Workstation is now protected."
             if isatty(STDOUT_FILENO) != 0 {
-                print("\r🛡️  [ARMED] Touch sensors ACTIVE! Workstation is now protected.              \r\n")
+                print("\r\(statusText)              \r\n")
             } else {
-                print("🛡️  [ARMED] Touch sensors ACTIVE! Workstation is now protected.\n")
+                print("\(statusText)\n")
             }
             print(String(repeating: "=", count: 64))
             fflush(stdout)
@@ -409,12 +464,17 @@ class TrapManager {
 
         setupStdinListener()
         setupEventTap()
+
+        if config.antiTheft {
+            setupAntiTheftSensors()
+        }
     }
 
     func checkPermissionsAndPrintBanner() {
         let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         let options = [promptKey: true] as CFDictionary
         let isTrusted = AXIsProcessTrustedWithOptions(options)
+        let isRoot = geteuid() == 0
 
         print(String(repeating: "=", count: 64))
         print("                 ⚡ VIBE TRAP ARMED & READY ⚡")
@@ -427,6 +487,20 @@ class TrapManager {
         print("Trap Mode       : \(config.timeoutMs == nil ? "🔒 Persistent Kiosk (locks until disarmed)" : "⏱️  Timeout (\(config.timeoutMs!) ms)")")
         print("Bypass Defense  : 🛡️  ACTIVE (Ctrl+C / kill signals trigger instant lock)")
         print("Dry Run Mode    : \(config.dryRun ? "ENABLED (screen lock simulated)" : "DISABLED (screen will lock)")")
+        if config.antiTheft {
+            print(String(repeating: "-", count: 64))
+            print("Anti-Theft Mode : 🛡️  ACTIVE (Coffee Shop Defense)")
+            print("  - AC Power    : ✅ ACTIVE (MagSafe/USB-C disconnect monitor)")
+            print("  - Lid Close   : ✅ ACTIVE (Clamshell close monitor)")
+            if isRoot {
+                print("  - Motion IMU  : ✅ ACTIVE (Apple Silicon accelerometer & gyro)")
+            } else {
+                print("  - Motion IMU  : ⚠️  STANDBY (Run with 'sudo vibe-trap --anti-theft'")
+                print("                  to enable hardware accelerometer motion tracking)")
+            }
+            print("  - Sensitivity : \(config.sensitivity.rawValue.uppercased()) (\(config.sensitivity.thresholdG)g motion threshold)")
+            print(String(repeating: "-", count: 64))
+        }
         print("Permissions     : \(isTrusted ? "✅ Accessibility Granted" : "⚠️  Accessibility Prompted (Allow in Settings)")")
         print("Status          : \(config.countdown > 0 ? "⏳ Arming in \(config.countdown)s..." : "🛡️  ARMED! Listening for intruders...")")
         print(String(repeating: "=", count: 64))
@@ -844,7 +918,188 @@ class TrapManager {
         cleanupAndExit(success: false, message: "[*] Terminating vibe-trap.")
     }
 
+    // MARK: - Anti-Theft Protection Suite
+
+    func setupAntiTheftSensors() {
+        setupPowerMonitoring()
+        setupLidMonitoring()
+
+        // If accelerometer was calibrating, ensure baseline is established
+        if baselineGravity == nil && !calibrationSamples.isEmpty {
+            let avgX = calibrationSamples.map { $0.x }.reduce(0, +) / Double(calibrationSamples.count)
+            let avgY = calibrationSamples.map { $0.y }.reduce(0, +) / Double(calibrationSamples.count)
+            let avgZ = calibrationSamples.map { $0.z }.reduce(0, +) / Double(calibrationSamples.count)
+            self.baselineGravity = (x: avgX, y: avgY, z: avgZ)
+            self.isCalibrating = false
+            self.calibrationSamples.removeAll()
+        }
+    }
+
+    func checkIsACConnected() -> Bool {
+        guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue() else { return false }
+        guard let type = IOPSGetProvidingPowerSourceType(blob)?.takeRetainedValue() as String? else { return false }
+        return type == (kIOPMACPowerKey as String)
+    }
+
+    func checkIsClamshellClosed() -> Bool {
+        let rootDomain = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
+        guard rootDomain != 0 else { return false }
+        defer { IOObjectRelease(rootDomain) }
+        if let clamshell = IORegistryEntryCreateCFProperty(rootDomain, "AppleClamshellState" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Bool {
+            return clamshell
+        }
+        return false
+    }
+
+    func setupPowerMonitoring() {
+        let selfPtr = Unmanaged.passUnretained(self).toOpaque()
+        if let source = IOPSNotificationCreateRunLoopSource({ context in
+            guard let context = context else { return }
+            let manager = Unmanaged<TrapManager>.fromOpaque(context).takeUnretainedValue()
+            manager.handlePowerSourceChanged()
+        }, selfPtr)?.takeRetainedValue() {
+            self.powerRunLoopSource = source
+            CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
+        }
+    }
+
+    func handlePowerSourceChanged() {
+        let currentAC = checkIsACConnected()
+        if isSensorArmed && !isDisarmed && !isTriggered {
+            if let wasAC = wasACConnected, wasAC && !currentAC {
+                trigger(reason: "🚨 ANTI-THEFT: Power adapter unplugged (MagSafe/USB-C disconnect)!")
+            }
+        }
+        self.wasACConnected = currentAC
+    }
+
+    func setupLidMonitoring() {
+        self.sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self, self.isSensorArmed && !self.isDisarmed && !self.isTriggered else { return }
+            self.trigger(reason: "🚨 ANTI-THEFT: Laptop lid closed (system sleep detected)!")
+        }
+
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + 0.25, repeating: 0.25)
+        timer.setEventHandler { [weak self] in
+            guard let self = self, self.isSensorArmed && !self.isDisarmed && !self.isTriggered else { return }
+            if self.checkIsClamshellClosed() {
+                self.trigger(reason: "🚨 ANTI-THEFT: Laptop lid closed (clamshell sensor)!")
+            }
+        }
+        timer.resume()
+        self.clamshellTimer = timer
+    }
+
+    func setupAccelerometerMonitoring() {
+        guard geteuid() == 0 else { return }
+
+        var iterator = io_iterator_t()
+        let matching = IOServiceMatching("AppleSPUHIDDevice")
+        let kr = IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator)
+        guard kr == KERN_SUCCESS else { return }
+
+        var targetDev: IOHIDDevice? = nil
+        var service = IOIteratorNext(iterator)
+        while service != 0 {
+            var props: Unmanaged<CFMutableDictionary>?
+            if IORegistryEntryCreateCFProperties(service, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+               let dict = props?.takeRetainedValue() as? [String: Any],
+               let up = dict["PrimaryUsagePage"] as? Int, up == 65280,
+               let u = dict["PrimaryUsage"] as? Int, u == 3 {
+                targetDev = IOHIDDeviceCreate(kCFAllocatorDefault, service)
+                IOObjectRelease(service)
+                break
+            }
+            IOObjectRelease(service)
+            service = IOIteratorNext(iterator)
+        }
+        IOObjectRelease(iterator)
+
+        guard let dev = targetDev else { return }
+
+        let reportSize = 22
+        let reportBuf = UnsafeMutablePointer<UInt8>.allocate(capacity: reportSize)
+        self.reportBuffer = reportBuf
+        self.hidDevice = dev
+
+        IOHIDDeviceScheduleWithRunLoop(dev, CFRunLoopGetCurrent(), CFRunLoopMode.commonModes.rawValue)
+        let openRes = IOHIDDeviceOpen(dev, IOOptionBits(kIOHIDOptionsTypeNone))
+        guard openRes == kIOReturnSuccess else { return }
+
+        self.isCalibrating = true
+        let selfPtr = Unmanaged.passUnretained(self).toOpaque()
+
+        IOHIDDeviceRegisterInputReportCallback(dev, reportBuf, reportSize, { context, result, sender, type, reportId, report, reportLen in
+            guard let context = context, reportLen >= 18 else { return }
+            let manager = Unmanaged<TrapManager>.fromOpaque(context).takeUnretainedValue()
+            let x = report.advanced(by: 6).withMemoryRebound(to: Int32.self, capacity: 1) { $0.pointee }
+            let y = report.advanced(by: 10).withMemoryRebound(to: Int32.self, capacity: 1) { $0.pointee }
+            let z = report.advanced(by: 14).withMemoryRebound(to: Int32.self, capacity: 1) { $0.pointee }
+            let gx = Double(x) / 65536.0
+            let gy = Double(y) / 65536.0
+            let gz = Double(z) / 65536.0
+            manager.handleAccelerometerReading(x: gx, y: gy, z: gz)
+        }, selfPtr)
+    }
+
+    func handleAccelerometerReading(x: Double, y: Double, z: Double) {
+        if isCalibrating {
+            calibrationSamples.append((x: x, y: y, z: z))
+            if calibrationSamples.count >= 30 {
+                let avgX = calibrationSamples.map { $0.x }.reduce(0, +) / Double(calibrationSamples.count)
+                let avgY = calibrationSamples.map { $0.y }.reduce(0, +) / Double(calibrationSamples.count)
+                let avgZ = calibrationSamples.map { $0.z }.reduce(0, +) / Double(calibrationSamples.count)
+                self.baselineGravity = (x: avgX, y: avgY, z: avgZ)
+                self.isCalibrating = false
+                self.calibrationSamples.removeAll()
+            }
+            return
+        }
+
+        guard isSensorArmed && !isDisarmed && !isTriggered, let baseline = baselineGravity else { return }
+        let dx = x - baseline.x
+        let dy = y - baseline.y
+        let dz = z - baseline.z
+        let delta = sqrt(dx * dx + dy * dy + dz * dz)
+
+        if delta > config.sensitivity.thresholdG {
+            DispatchQueue.main.async {
+                self.trigger(reason: String(format: "🚨 ANTI-THEFT: Physical movement / tilt detected by accelerometer (Δ%.2fg)!", delta))
+            }
+        }
+    }
+
+    func cleanupAntiTheft() {
+        if let source = powerRunLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
+            powerRunLoopSource = nil
+        }
+        if let timer = clamshellTimer {
+            timer.cancel()
+            clamshellTimer = nil
+        }
+        if let observer = sleepObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            sleepObserver = nil
+        }
+        if let dev = hidDevice {
+            IOHIDDeviceUnscheduleFromRunLoop(dev, CFRunLoopGetCurrent(), CFRunLoopMode.commonModes.rawValue)
+            IOHIDDeviceClose(dev, IOOptionBits(kIOHIDOptionsTypeNone))
+            hidDevice = nil
+        }
+        if let buf = reportBuffer {
+            buf.deallocate()
+            reportBuffer = nil
+        }
+    }
+
     func cleanupAndExit(success: Bool, message: String) {
+        cleanupAntiTheft()
         restoreTerminal()
         print(message)
         fflush(stdout)

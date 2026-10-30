@@ -90,6 +90,45 @@ The trap disarms and cleanly terminates without triggering any alarms or locking
 
 ---
 
+## ☕ Coffee Shop Anti-Theft Defense (`--anti-theft`)
+
+Stepping away from your table at a coffee shop, library, or co-working lounge? Standard `vibe-trap` watches for mouse clicks and keyboard tampering, but opportunistic thieves often grab the machine without touching the trackpad.
+
+Enabling **`--anti-theft`** (or `-T`) activates a **Tri-Vector Hardware Protection Suite**:
+
+```bash
+# Multi-vector protection (AC power disconnect + lid closure):
+caffeinate -d npx vibe-trap --anti-theft
+
+# With root privileges to unlock Apple Silicon hardware IMU accelerometer & gyro:
+sudo caffeinate -d npx vibe-trap --anti-theft --sensitivity high
+```
+
+### 1. 📳 Apple Silicon IMU Accelerometer & Gyroscope
+- Hooks into the undocumented 6-axis MEMS IMU (`AppleSPUHIDDevice`) hidden inside Apple Silicon MacBooks (M1–M4) via low-level IOKit HID callbacks at 800Hz.
+- **Auto-Baseline Calibration:** When arming, `vibe-trap` samples and establishes a resting gravity baseline vector ($g$). This filters out subtle table nudges and heavy coffee mugs while immediately detecting if someone lifts, slides, or tilts your MacBook.
+- **Root/Sudo Requirement:** Because macOS restricts userland access to raw SPU HID streams, hardware accelerometer tracking requires running with `sudo`. If run as a standard user, `vibe-trap` gracefully continues with AC Power and Lid sensors active and displays a helpful tip in the terminal.
+
+### 2. 🔌 AC Power / Charger Disconnect Guard (`IOPowerSources`)
+- Monitors MagSafe and USB-C power delivery in real time using native `IOPSNotificationCreateRunLoopSource` callbacks with zero polling latency.
+- If a thief unplugs your charger to run off with your laptop, the alarm triggers instantly before they even pick up the device.
+
+### 3. 💻 Lid / Clamshell Closure Guard (`AppleClamshellState`)
+- Watches `AppleClamshellState` from `IOPMrootDomain` and hooks `NSWorkspace.willSleepNotification`.
+- If an intruder snaps your MacBook lid closed to flee, the trap fires immediately.
+
+### Motion Sensitivity Tuning
+
+Configure motion detection sensitivity with `--sensitivity <level>` (or `-s`):
+
+| Sensitivity | Threshold ($\Delta g$) | Best Used For |
+|:---|:---|:---|
+| `low` | `0.45g` | Noisy environments, communal benches, or wobbly cafe tables. Triggers only on significant physical lifts or moves. |
+| `medium` *(default)* | `0.25g` | Balanced default. Ignores coffee cups and typing while catching any deliberate lift, slide, or tilt. |
+| `high` | `0.12g` | Maximum security. Triggers on any slight nudge, shift, or tilt. |
+
+---
+
 ## 💥 The Payload ("The Vibe Check")
 
 If an intruder touches your laptop:
@@ -133,10 +172,21 @@ Whenever triggered, it picks a random matching image and audio pair from `assets
 | `--max-volume` | Force system output volume to 100% on trigger | Enabled (or `$VIBE_TRAP_MAX_VOLUME`) |
 | `--no-max-volume` | Preserve current volume when trap triggers | Disabled |
 | `--dry-run` | Test mode: triggers payload but skips screen sleep lock | Disabled |
-| `--version`, `-v` | Show version number and exit | `1.1.0` |
+| `--anti-theft`, `-T` | Coffee shop anti-theft mode: tracks accelerometer movement, AC unplug & lid close | Disabled |
+| `--sensitivity`, `-s` | Anti-theft motion sensitivity (`low`, `medium`, `high`) | `medium` |
+| `--version`, `-v` | Show version number and exit | `1.3.0` |
 | `--help`, `-h` | Show help message and exit | |
 
 #### Examples:
+
+**☕ Coffee Shop Anti-Theft Protection:**
+```bash
+# Multi-vector protection: triggers if charger is unplugged or lid is closed
+caffeinate -d npx vibe-trap --anti-theft
+
+# With root privileges to unlock Apple Silicon hardware IMU accelerometer & gyro:
+sudo caffeinate -d npx vibe-trap --anti-theft --sensitivity high
+```
 
 **Custom Countdown & Immediate Arming:**
 ```bash
